@@ -7,9 +7,11 @@ quote the case word for word, and the app checks that the quote really exists.
 """
 
 import json
+import time
 from pydantic import BaseModel
 
 DEFAULT_MODEL = "gemini-3.8-flash"
+BACKUP_MODEL = "gemini-3.5-flash-lite"
 
 
 class Question(BaseModel):
@@ -68,28 +70,43 @@ def _client(api_key):
     return genai.Client(api_key=api_key, http_options=types.HttpOptions(timeout=45_000)), types
 
 
+def _map_error(exc, model):
+    code = getattr(exc, "code", None)
+    if code == 429:
+        return AIUnavailable("Gemini free-tier rate limit reached. Wait a minute and try again.")
+    if code in (401, 403) or "API key" in str(exc):
+        return AIUnavailable(f"Gemini rejected the API key ({code}: {str(exc)[:160]})")
+    if code == 404:
+        return AIUnavailable(f"Model '{model}' was not found. Change GEMINI_MODEL in secrets.")
+    return AIUnavailable(f"Could not get a reply from Gemini ({code or type(exc).__name__}).")
+
+
 def _call(api_key, model, prompt, schema):
     if not api_key:
         raise AIUnavailable("No Gemini API key is configured.")
     try:
         client, types = _client(api_key)
-        resp = client.models.generate_content(
-            model=model, contents=prompt,
-            config=types.GenerateContentConfig(
-                system_instruction=COACH_RULES, temperature=0.4,
-                response_mime_type="application/json", response_schema=schema,
-                automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True)))
     except ImportError as exc:
         raise AIUnavailable("The google-genai package is not installed.") from exc
-    except Exception as exc:
-        code = getattr(exc, "code", None)
-        if code == 429:
-            raise AIUnavailable("Gemini free-tier rate limit reached. Wait a minute and try again.") from exc
-        if code in (401, 403) or "API key" in str(exc):
-            raise AIUnavailable(f"Gemini rejected the API key ({code}: {str(exc)[:160]})") from exc
-        if code == 404:
-            raise AIUnavailable(f"Model '{model}' was not found. Change GEMINI_MODEL in secrets.") from exc
-        raise AIUnavailable(f"Could not get a reply from Gemini ({code or type(exc).__name__}).") from exc
+    config = types.GenerateContentConfig(
+        system_instruction=COACH_RULES, temperature=0.4,
+        response_mime_type="application/json", response_schema=schema,
+        automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True))
+    # Google sometimes answers 500/503 when the model is busy: retry once, then try a lighter backup model.
+    attempts = [model, model] + ([BACKUP_MODEL] if model != BACKUP_MODEL else [])
+    resp, last = None, None
+    for i, m in enumerate(attempts):
+        try:
+            resp = client.models.generate_content(model=m, contents=prompt, config=config)
+            break
+        except Exception as exc:
+            last = exc
+            if getattr(exc, "code", None) in (500, 502, 503, 504) and i < len(attempts) - 1:
+                time.sleep(2 + 2 * i)
+                continue
+            raise _map_error(exc, m) from exc
+    if resp is None:
+        raise _map_error(last, model)
     try:
         return schema.model_validate_json(resp.text)
     except Exception as exc:
