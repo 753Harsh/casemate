@@ -96,3 +96,16 @@ def framework_coverage(text, framework):
 def evidence_level(n_facts, n_phrases):
     total = n_facts + min(n_phrases, 3)
     return "Strong" if total >= 3 else "Some" if total >= 1 else "None"
+
+
+# Phrases that suggest a student is asking CaseMate to do the work or change its rules.
+INTEGRITY_PHRASES = [
+    "write the answer", "write my answer", "write the full", "write the complete", "model answer",
+    "give me the answer", "just answer", "do it for me", "ignore your rules", "ignore all",
+    "ignore previous", "ignore the above", "system prompt", "you are now", "give me full marks", "score this 5",
+]
+
+
+def integrity_hits(text):
+    t = norm(text)
+    return [p for p in INTEGRITY_PHRASES if p in t]

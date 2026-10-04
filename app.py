@@ -160,7 +160,8 @@ if ss.questions:
                 cover = checks.framework_coverage(a, framework)
                 rows.append({"Answer": i + 1, "Words": len(checks.words(a)), "Case facts used": len(used),
                              "Phrases from case": phrases, "Evidence": checks.evidence_level(len(used), phrases),
-                             "Framework elements mentioned": ", ".join(cover) or "none"})
+                             "Framework elements mentioned": ", ".join(cover) or "none",
+                             "Integrity": "Flagged" if checks.integrity_hits(a) else "OK"})
             ss.rule_rows = rows
             ss.answers = answers
             ss.feedback, ss.fb_error = None, None
@@ -179,11 +180,15 @@ if ss.get("rule_rows") and ss.questions:
     st.divider()
     st.subheader("③ Feedback")
     fb = ss.feedback
+    rule_flag = any(r.get("Integrity") == "Flagged" for r in ss.rule_rows)
+    ai_flag = bool(fb and fb["integrity_flag"])
+    if rule_flag or ai_flag:
+        who = " and ".join(x for x, f in (("the AI", ai_flag), ("the rule check", rule_flag)) if f)
+        st.error(f"🚩 Integrity flag (raised by {who}): an answer asks CaseMate to write the answer or change its rules. "
+                 "CaseMate will only coach.")
     if ss.fb_error:
         st.warning(ss.fb_error)
     if fb:
-        if fb["integrity_flag"]:
-            st.error("🚩 CaseMate noticed an answer asking it to write the answer or change its rules. It will only coach.")
         df = pd.DataFrame(fb["rubric"])
         df["score"] = df["score"].clip(1, 5)
         total = int(df["score"].sum())
